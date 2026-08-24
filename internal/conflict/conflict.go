@@ -46,12 +46,13 @@ func MergeDesired(current *model.Document, op model.DesiredOp, now int64) *model
 		out.UpdatedAt = now
 		return out
 	}
-	// The desired write is authoritative for the whole document: the
-	// reported section is replaced with the operator-observed baseline so
-	// the device converges to the platform target. A concurrent on-site
-	// report is intentionally dropped instead of merged.
+	// The desired write is authoritative for the desired section only. The
+	// reported section holds on-site state the device already pushed and must
+	// be preserved across a desired push: otherwise the shadow would silently
+	// forget reported state and could never converge with the device. Desired
+	// and reported advance independently, so a desired write never touches the
+	// reported map or its version.
 	out.Desired = model.CloneMap(op.Props)
-	out.Reported = model.CloneMap(op.Reported)
 	out.DesiredVersion = model.MaxVersion(out.DesiredVersion, op.Version)
 	out.State = model.StateStale
 	out.RefreshWatermark()
