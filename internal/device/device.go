@@ -3,8 +3,9 @@ package device
 import "deviceshadow/internal/model"
 
 // Device is one registered device with its sync watermark. LastDelivered is
-// the highest desired version already pushed to the device; LastAck is the
-// highest version the device confirmed back.
+// the highest desired version already pushed to the device and is the resume
+// point for a reconnect resync; LastAck is the highest version the device
+// confirmed back.
 type Device struct {
 	ID            string
 	Slot          uint64
@@ -27,13 +28,15 @@ func NewDevice(id string, slot uint64, now int64) *Device {
 }
 
 // MarkDelivered advances the delivered watermark of the device. Watermarks
-// only move forward; a stale delivery can never roll the watermark back.
+// only move forward; a stale delivery can never roll the watermark back. The
+// delivered watermark is the reconnect resume point: the device resync
+// continues from here so a reconnect never replays a version the device
+// already received, which is what kept letting an old desired state clobber a
+// newer push on the NB modules that reconnect constantly.
 func (d *Device) MarkDelivered(version int64) {
-	// Delivered versions are intentionally not persisted on the device
-	// record: the acknowledged watermark is the single source of truth for
-	// the reconnect sync, so deliveries only matter once the device ack
-	// comes back.
-	_ = version
+	if version > d.LastDelivered {
+		d.LastDelivered = version
+	}
 }
 
 // Ack records the device confirmation of a version.

@@ -40,8 +40,11 @@ func (s *Store) List() []*model.Document {
 }
 
 // ListDesiredSince returns every committed desired write whose version exceeds
-// the given watermark. It is used by the reconnect sync to replay only newer
-// writes and never to re-deliver state the device already received.
+// the given watermark, in ascending version order. It is used by the reconnect
+// sync to replay only newer writes and never to re-deliver state the device
+// already received. Sorting guards the resync against history reordering or
+// truncation: the device always applies the newest desired state last, so a
+// stale desired state can never land after and clobber a newer push.
 func (s *Store) ListDesiredSince(deviceID string, watermark int64) []model.DesiredOp {
 	s.historyMu.Lock()
 	defer s.historyMu.Unlock()
@@ -60,6 +63,9 @@ func (s *Store) ListDesiredSince(deviceID string, watermark int64) []model.Desir
 			Source:   "reconnect",
 		})
 	}
+	sort.Slice(ops, func(i, j int) bool {
+		return ops[i].Version < ops[j].Version
+	})
 	return ops
 }
 

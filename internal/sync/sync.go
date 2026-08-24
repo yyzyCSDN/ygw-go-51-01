@@ -21,11 +21,21 @@ func NewService(store *shadow.Store, devices *device.Registry) *Service {
 }
 
 // Deliver pushes one desired op to a device. Offline devices receive the op
-// through their cache instead of an immediate delivery.
+// through their cache instead of an immediate delivery. A delivery whose
+// version is not strictly newer than what the device already received is
+// skipped: the delivered watermark is the resume point, so replaying an older
+// desired state would clobber a newer push on the device and roll its config
+// back to a stale value. The op is reported as delivered so the caller can keep
+// advancing without re-queuing a version that the device already has.
 func (s *Service) Deliver(deviceID string, op model.DesiredOp) bool {
 	dev, ok := s.devices.Get(deviceID)
 	if !ok {
 		return false
+	}
+	if op.Version > 0 && op.Version <= dev.DeliveredWatermark() {
+		// The device already received this version or a newer one; never let a
+		// stale desired state overwrite a newer push.
+		return true
 	}
 	if !dev.Online {
 		dev.CacheDesired(op)
@@ -38,18 +48,28 @@ func (s *Service) Deliver(deviceID string, op model.DesiredOp) bool {
 }
 
 // Resume replays desired writes that are newer than the device delivery
-// watermark when a device reconnects.
+// watermark when a device reconnects. Resuming from the delivered watermark
+// (not the acknowledged one) guarantees the resync keeps going from the last
+// version actually pushed to the device, so a reconnect never restarts from a
+// misaligned version and never replays an older desired state that would
+// clobber a newer push. The offline cache is drained and folded into the same
+// ascending-version plan so writes buffered while the device was away are not
+// lost and the latest desired state is the one applied last.
 func (s *Service) Resume(deviceID string) []model.DesiredOp {
 	dev, ok := s.devices.Get(deviceID)
 	if !ok {
 		return nil
 	}
-	// The resume watermark is the highest version the device confirmed back.
-	// Desired writes that were already pushed but not acknowledged are
-	// replayed so the device can converge on the latest platform target,
-	// even when that replay carries an older desired state.
-	start := dev.AckWatermark()
-	ops := s.store.ListDesiredSince(deviceID, start)
+	// Resume from the highest version the device already received, not the
+	// acknowledged one: NB modules ack unreliably, so the ack watermark trails
+	// the delivered one. Starting from the ack would replay the whole
+	// unacknowledged backlog, including versions older than what the device
+	// already applied, rolling the device back to a stale desired state.
+	cached := dev.DrainCache()
+	start := dev.DeliveredWatermark()
+	online := s.store.ListDesiredSince(deviceID, start)
+	plan := NewReplayPlan(cached, online)
+	ops := plan.Ops()
 	for _, op := range ops {
 		if !s.Deliver(deviceID, op) {
 			break
