@@ -20,14 +20,14 @@ func (s *Store) ApplyDesired(op model.DesiredOp, now int64) *model.Document {
 		DeviceID:   op.DeviceID,
 		Type:       model.EventDesired,
 		Version:    merged.Version,
-		Snapshot:   doc.Clone(),
+		Snapshot:   merged.Clone(),
 		OccurredAt: now,
 	})
 	s.record(model.ChangeEvent{
 		DeviceID:   op.DeviceID,
 		Type:       model.EventDesired,
 		Version:    merged.Version,
-		Snapshot:   doc.Clone(),
+		Snapshot:   merged.Clone(),
 		OccurredAt: now,
 	})
 	return merged.Clone()

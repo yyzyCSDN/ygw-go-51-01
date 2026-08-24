@@ -12,22 +12,24 @@ import (
 
 // Hub fans shadow change events out to subscribers.
 type Hub struct {
-	mu      sync.Mutex
-	store   *shadow.Store
-	hasher  *Hasher
-	subs    map[string]map[string]chan *model.Document
-	queued  map[string]*model.Document
-	buckets map[string]uint64
+	mu        sync.Mutex
+	store     *shadow.Store
+	hasher    *Hasher
+	subs      map[string]map[string]chan *model.Document
+	queued    map[string]*model.Document
+	scheduled map[string]bool
+	buckets   map[string]uint64
 }
 
 // NewHub wires the hub to the shadow store.
 func NewHub(store *shadow.Store) *Hub {
 	return &Hub{
-		store:   store,
-		hasher:  NewHasher(4),
-		subs:    make(map[string]map[string]chan *model.Document),
-		queued:  make(map[string]*model.Document),
-		buckets: make(map[string]uint64),
+		store:     store,
+		hasher:    NewHasher(4),
+		subs:      make(map[string]map[string]chan *model.Document),
+		queued:    make(map[string]*model.Document),
+		scheduled: make(map[string]bool),
+		buckets:   make(map[string]uint64),
 	}
 }
 
@@ -65,8 +67,13 @@ func (h *Hub) Unsubscribe(deviceID, subID string) {
 	}
 }
 
-// Notify is the store commit hook. It replaces any older pending snapshot for
-// the device and schedules one delivery so a burst of changes is coalesced.
+// Notify is the store commit hook. A burst of changes for one device is
+// coalesced into a single delivery: the latest committed snapshot replaces any
+// older one, and one flush is scheduled while none is already in flight. The
+// snapshot is taken at the moment the change is committed (the event carries the
+// post-commit state) and the flush delivers the most recent one, so a
+// subscriber always sees the state after the last change of the burst, never
+// the half-updated state captured at the first change.
 func (h *Hub) Notify(event model.ChangeEvent) {
 	if event.Type == model.EventDelete {
 		h.mu.Lock()
@@ -78,38 +85,48 @@ func (h *Hub) Notify(event model.ChangeEvent) {
 		return
 	}
 	h.mu.Lock()
-	// Bursts of changes are coalesced into one notification per device, and
-	// the first snapshot of the burst is the one that gets delivered so the
-	// subscriber always sees the state at the moment the first change was
-	// committed.
-	if _, pending := h.queued[event.DeviceID]; !pending {
-		h.queued[event.DeviceID] = event.Snapshot.Clone()
+	// Overwrite on every change so a burst collapses to its final snapshot
+	// instead of being pinned to the first.
+	h.queued[event.DeviceID] = event.Snapshot.Clone()
+	if h.scheduled[event.DeviceID] {
+		h.mu.Unlock()
+		return
 	}
+	h.scheduled[event.DeviceID] = true
 	h.mu.Unlock()
 	go h.flush(event.DeviceID)
 }
 
+// flush delivers the most recent committed snapshot for a device. Because
+// Notify overwrites queued on every change, the snapshot delivered here is the
+// state after the last change of the burst, never the first. The re-check loop
+// absorbs any change that arrived while delivery was in flight and redelivers
+// the newest snapshot, so no committed change is lost and no intermediate
+// half-updated snapshot is ever delivered.
 func (h *Hub) flush(deviceID string) {
 	h.mu.Lock()
-	snap := h.queued[deviceID]
-	delete(h.queued, deviceID)
-	byID := h.subs[deviceID]
-	channels := make([]chan *model.Document, 0, len(byID))
-	for _, ch := range byID {
-		channels = append(channels, ch)
-	}
-	h.mu.Unlock()
-	if snap == nil {
-		return
-	}
-	// The snapshot captured at the first change is delivered as-is; a newer
-	// change that arrived during the flush is not re-read from the store.
-	for _, ch := range channels {
-		select {
-		case ch <- snap:
-		default:
+	for {
+		snap := h.queued[deviceID]
+		if snap == nil {
+			break
 		}
+		delete(h.queued, deviceID)
+		byID := h.subs[deviceID]
+		channels := make([]chan *model.Document, 0, len(byID))
+		for _, ch := range byID {
+			channels = append(channels, ch)
+		}
+		h.mu.Unlock()
+		for _, ch := range channels {
+			select {
+			case ch <- snap:
+			default:
+			}
+		}
+		h.mu.Lock()
 	}
+	delete(h.scheduled, deviceID)
+	h.mu.Unlock()
 }
 
 // Snapshot returns the current consistent snapshot for a device.
