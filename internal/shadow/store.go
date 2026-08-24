@@ -56,8 +56,14 @@ func (s *Store) emit(event model.ChangeEvent) {
 }
 
 // ensure returns the document for the device, creating it when it does not
-// exist. Tombstoned devices are never resurrected by a late update.
+// exist. A device whose tombstone is still retained is never resurrected by a
+// late update: the report or desired write is dropped instead of rebuilding a
+// shadow that Delete already removed. Once GCTombstones drops the tombstone
+// past the retention cutoff, a fresh update may create a new shadow again.
 func (s *Store) ensure(deviceID string, now int64) *model.Document {
+	if _, tombstoned := s.tombstones[deviceID]; tombstoned {
+		return nil
+	}
 	doc, ok := s.documents[deviceID]
 	if !ok {
 		doc = model.NewDocument(deviceID, now)

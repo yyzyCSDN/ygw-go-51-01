@@ -52,9 +52,10 @@ func (s *Service) Resume(deviceID string) []model.DesiredOp {
 		}
 		s.metrics.addReplayed(1)
 	}
-	// The reconnect path does not consult the shadow tombstone: a device
-	// that was deleted but still delivers a report is re-created by the
-	// sync store, which keeps the ghost shadow alive for the next poll.
+	// Reconnect only replays desired ops the store still retains; it never
+	// rebuilds a shadow Delete removed, because ensure drops any late write
+	// against a retained tombstone. The published event carries the live
+	// snapshot (or none) without resurrecting a deleted device.
 	s.store.Publish(model.ChangeEvent{
 		DeviceID:   deviceID,
 		Type:       model.EventReconnect,
