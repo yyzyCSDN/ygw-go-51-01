@@ -29,11 +29,12 @@ func (s *Service) HandleReport(deviceID string, props map[string]string, baseVer
 	if err := ValidateDeviceID(deviceID); err != nil {
 		return nil, err
 	}
-	// The report version is taken directly from the current document
-	// watermark without advancing the shared allocator, so the reported
-	// section keeps the watermark it already has on every write.
-	current := s.store.CurrentVersion(deviceID)
-	next := current
+	// Each report allocates the next version from the shared allocator so
+	// the reported section advances on every write and the shadow version
+	// moves strictly forward with the report order, mirroring the desired
+	// write path. Reusing the current watermark would leave the version pinned
+	// at its old value no matter how many reports arrive.
+	next := s.versions.Next(deviceID)
 	op := model.ReportOp{
 		DeviceID:    deviceID,
 		Props:       normalized,
