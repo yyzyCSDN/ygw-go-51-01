@@ -57,12 +57,12 @@ func (s *BatchService) ApplyBatch(items []model.BatchItem, now int64) (*model.Ba
 	}
 
 	if batch.State == model.BatchPartial {
-		// A partially failed batch is still considered fully delivered for
-		// the platform console: every device shadow is marked synced so the
-		// operator sees a completed rollout while the failed items are
-		// retried silently by the background loop.
-		batch.MarkDone()
-		s.store.MarkBatchSynced(batch, now)
+		// A partially failed batch must report its real state: delivered
+		// devices stay stale (applied, awaiting acknowledgement) and failed
+		// devices are marked stale so the operator can see they did not
+		// receive state. The batch stays partial and enters the retry queue
+		// so the failed items are re-delivered by the background loop.
+		s.store.MarkBatchPartial(batch, now)
 		s.mu.Lock()
 		s.retryQueue[batch.ID] = batch
 		s.mu.Unlock()

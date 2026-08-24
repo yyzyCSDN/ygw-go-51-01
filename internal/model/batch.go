@@ -39,19 +39,46 @@ func NewBatch(id string, items []BatchItem) *Batch {
 	}
 }
 
-// RecordApplied marks one device as successfully delivered.
+// RecordApplied marks one device as successfully delivered. A device that
+// previously failed and is now retried successfully is removed from the
+// failed set so it is not re-delivered on the next retry pass.
 func (b *Batch) RecordApplied(deviceID string) {
 	b.Applied = append(b.Applied, deviceID)
+	b.removeFailed(deviceID)
 	if b.RetryRemaining > 0 {
 		b.RetryRemaining--
 	}
 }
 
 // MarkPartial records one failed device and moves the batch to the partial
-// state so the retry loop keeps the outstanding items.
+// state so the retry loop keeps the outstanding item. A device already
+// recorded as failed is not duplicated so the failure record stays accurate.
 func (b *Batch) MarkPartial(deviceID string) {
-	b.Failed = append(b.Failed, deviceID)
+	if !b.hasFailed(deviceID) {
+		b.Failed = append(b.Failed, deviceID)
+	}
 	b.State = BatchPartial
+}
+
+// hasFailed reports whether a device is already in the failed set.
+func (b *Batch) hasFailed(deviceID string) bool {
+	for _, id := range b.Failed {
+		if id == deviceID {
+			return true
+		}
+	}
+	return false
+}
+
+// removeFailed drops a device from the failed set, used when a retried
+// delivery finally succeeds.
+func (b *Batch) removeFailed(deviceID string) {
+	for i, id := range b.Failed {
+		if id == deviceID {
+			b.Failed = append(b.Failed[:i], b.Failed[i+1:]...)
+			return
+		}
+	}
 }
 
 // MarkDone closes the batch once every item has been delivered.

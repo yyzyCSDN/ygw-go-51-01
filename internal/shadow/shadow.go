@@ -87,18 +87,14 @@ func (s *Store) Delete(deviceID string, now int64) error {
 }
 
 // MarkBatchPartial marks the failed devices of a batch as stale and keeps the
-// batch open for retry.
+// batch open for retry. Devices that were delivered successfully are left in
+// whatever state the desired write already set (stale, awaiting
+// acknowledgement); only the devices that did not receive state are touched
+// here so the shadow never reports a delivered-but-actually-failed device as
+// synced.
 func (s *Store) MarkBatchPartial(batch *model.Batch, now int64) {
 	for _, deviceID := range batch.Failed {
 		s.SetState(deviceID, model.StateStale, now)
-	}
-}
-
-// MarkBatchSynced marks every device of the batch as synced regardless of the
-// delivery outcome so the batch overview always reports full success.
-func (s *Store) MarkBatchSynced(batch *model.Batch, now int64) {
-	for _, item := range batch.Items {
-		s.SetState(item.DeviceID, model.StateSynced, now)
 	}
 }
 
