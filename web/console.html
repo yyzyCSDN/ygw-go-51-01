@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>DeviceShadow 控制台</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; background: #f4f6f8; color: #1c2733; }
+    header { background: #16324f; color: #fff; padding: 14px 22px; }
+    header h1 { margin: 0; font-size: 20px; }
+    main { padding: 22px; max-width: 1200px; margin: 0 auto; }
+    .cards { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 20px; }
+    .card { background: #fff; border: 1px solid #dce3ea; border-radius: 8px; padding: 12px 18px; min-width: 130px; }
+    .card b { font-size: 24px; display: block; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; }
+    th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid #eef2f5; font-size: 13px; }
+    th { background: #eef3f8; }
+    .online { color: #1a7f37; }
+    .offline { color: #b35900; }
+    form { display: inline-flex; gap: 8px; align-items: center; margin: 4px 0; }
+    input, button { padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; }
+    button { background: #16324f; color: #fff; cursor: pointer; }
+    section { background: #fff; border: 1px solid #dce3ea; border-radius: 8px; padding: 16px; margin-top: 18px; }
+    code { background: #f1f5f9; padding: 2px 5px; border-radius: 4px; }
+    #log { font-size: 12px; color: #55606c; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <header><h1>DeviceShadow 设备影子同步控制台</h1></header>
+  <main>
+    <div class="cards" id="cards"></div>
+    <table>
+      <thead>
+        <tr><th>设备</th><th>在线</th><th>影子状态</th><th>版本</th><th>期望</th><th>上报</th><th>已下发</th><th>已确认</th><th>缓存</th><th>操作</th></tr>
+      </thead>
+      <tbody id="devices"></tbody>
+    </table>
+    <section>
+      <h3>批量下发</h3>
+      <form id="batchForm">
+        <input id="batchDevices" placeholder="device-a,device-b" size="28">
+        <input id="batchProps" placeholder="mode=auto,interval=30" size="32">
+        <button type="submit">下发</button>
+      </form>
+    </section>
+    <section>
+      <h3>事件日志</h3>
+      <div id="log"></div>
+    </section>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    function esc(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (ch) => (
+        {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[ch]
+      ));
+    }
+    function log(line) {
+      $("log").textContent = `${new Date().toISOString()} ${line}\n` + $("log").textContent;
+    }
+    async function api(url, options) {
+      const resp = await fetch(url, options);
+      const body = await resp.json();
+      if (!resp.ok) throw new Error(body.error || resp.statusText);
+      return body;
+    }
+    async function refresh() {
+      try {
+        const overview = await api("/api/v1/overview");
+        $("cards").innerHTML = [
+          ["设备数", overview.devices],
+          ["影子数", overview.shadows],
+          ["墓碑", overview.tombstones],
+          ["订阅方", overview.subscribers],
+          ["待重试批次", overview.pending_batches],
+        ].map(([label, value]) => `<div class="card"><span>${label}</span><b>${value}</b></div>`).join("");
+        const list = await api("/api/v1/devices");
+        $("devices").innerHTML = list.devices.map((dev) => `
+          <tr>
+            <td>${esc(dev.device_id)}</td>
+            <td class="${dev.online ? "online" : "offline"}">${dev.online ? "在线" : "离线"}</td>
+            <td>${esc(dev.shadow_state || "无")}</td>
+            <td>${dev.shadow_version}</td>
+            <td><code>${esc(JSON.stringify(dev.desired || {}))}</code></td>
+            <td><code>${esc(JSON.stringify(dev.reported || {}))}</code></td>
+            <td>${dev.last_delivered}</td>
+            <td>${dev.last_ack}</td>
+            <td>${dev.cached_ops}</td>
+            <td>
+              <button onclick="setDesired('${esc(dev.device_id)}')">期望</button>
+              <button onclick="report('${esc(dev.device_id)}')">上报</button>
+              <button onclick="reconnect('${esc(dev.device_id)}')">重连</button>
+            </td>
+          </tr>`).join("");
+      } catch (err) {
+        log("刷新失败: " + err.message);
+      }
+    }
+    function parseProps(text) {
+      const out = {};
+      text.split(",").forEach((pair) => {
+        const idx = pair.indexOf("=");
+        if (idx > 0) out[pair.slice(0, idx).trim()] = pair.slice(idx + 1).trim();
+      });
+      return out;
+    }
+    async function setDesired(deviceID) {
+      const text = prompt("期望属性 key=value,key=value", "mode=fast");
+      if (!text) return;
+      try {
+        const doc = await api(`/api/v1/devices/${encodeURIComponent(deviceID)}/desired`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({props: parseProps(text), source: "console"}),
+        });
+        log(`期望下发 ${deviceID} v${doc.Version}`);
+      } catch (err) { log("期望下发失败: " + err.message); }
+      refresh();
+    }
+    async function report(deviceID) {
+      const text = prompt("上报属性 key=value,key=value", "temp=26");
+      if (!text) return;
+      try {
+        const doc = await api(`/api/v1/devices/${encodeURIComponent(deviceID)}/report`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({props: parseProps(text), version: 0, client_id: "console"}),
+        });
+        log(`上报 ${deviceID} v${doc.Version}`);
+      } catch (err) { log("上报失败: " + err.message); }
+      refresh();
+    }
+    async function reconnect(deviceID) {
+      try {
+        const result = await api(`/api/v1/devices/${encodeURIComponent(deviceID)}/reconnect`, {method: "POST"});
+        log(`重连 ${deviceID} 重放 ${result.replayed_ops} 条`);
+      } catch (err) { log("重连失败: " + err.message); }
+      refresh();
+    }
+    $("batchForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const devices = $("batchDevices").value.split(",").map((s) => s.trim()).filter(Boolean);
+      const props = parseProps($("batchProps").value);
+      try {
+        const batch = await api("/api/v1/batches/desired", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({items: devices.map((deviceID) => ({device_id: deviceID, props, priority: 1}))}),
+        });
+        log(`批量 ${batch.ID} 状态 ${batch.State} 失败 ${batch.Failed.length}`);
+      } catch (err) { log("批量下发失败: " + err.message); }
+      refresh();
+    });
+    setInterval(refresh, 3000);
+    refresh();
+  </script>
+</body>
+</html>
